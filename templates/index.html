@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+
+    <meta charset="UTF-8">
+
+    <title>SOFIA</title>
+
+    <style>
+
+        body {
+            background: #111;
+            color: white;
+
+            font-family: Arial;
+
+            display: flex;
+            justify-content: center;
+            align-items: center;
+
+            height: 100vh;
+        }
+
+        #talkButton {
+
+            width: 180px;
+            height: 180px;
+
+            border-radius: 50%;
+
+            border: none;
+
+            background: #222;
+
+            color: white;
+
+            font-size: 20px;
+
+            cursor: pointer;
+        }
+
+        #talkButton.recording {
+
+            background: #ff3b3b;
+
+            transform: scale(1.1);
+        }
+
+        #status {
+
+            position: absolute;
+
+            top: 30px;
+
+            font-size: 20px;
+        }
+
+    </style>
+
+</head>
+
+
+<body>
+
+    <div id="status">
+        Hold to talk
+    </div>
+
+
+    <button id="talkButton">
+
+        RECORD!
+
+    </button>
+
+
+<script>
+
+const button = document.getElementById("talkButton");
+const status = document.getElementById("status");
+
+let recorder;
+let chunks = [];
+
+
+// start recording
+async function startRecording() {
+
+    const stream =
+        await navigator.mediaDevices.getUserMedia({
+            audio: true
+        });
+
+    recorder = new MediaRecorder(stream);
+
+    chunks = [];
+
+
+    recorder.ondataavailable = event => {
+
+        chunks.push(event.data);
+
+    };
+
+
+    recorder.onstop = sendAudio;
+
+
+    recorder.start();
+
+
+    button.classList.add("recording");
+
+    status.textContent = "Listening...";
+
+}
+
+
+// End recording
+function stopRecording() {
+
+    if (!recorder)
+        return;
+
+    recorder.stop();
+
+    recorder.stream
+        .getTracks()
+        .forEach(track => track.stop());
+
+    button.classList.remove("recording");
+
+    status.textContent = "SOFIA is thinking...";
+
+}
+
+
+// Send AUdio
+async function sendAudio() {
+
+    const blob = new Blob(
+        chunks,
+        {
+            type: "audio/webm"
+        }
+    );
+
+
+    const formData = new FormData();
+
+    formData.append(
+        "audio",
+        blob,
+        "input.webm"
+    );
+
+
+    const response =
+        await fetch(
+            "/chat",
+            {
+                method: "POST",
+                body: formData
+            }
+        );
+
+
+    if (!response.ok) {
+
+        status.textContent =
+            "Something went wrong.";
+
+        return;
+
+    }
+
+
+    const audioBlob =
+        await response.blob();
+
+
+    const audioURL =
+        URL.createObjectURL(audioBlob);
+
+
+    const audio =
+        new Audio(audioURL);
+
+
+    status.textContent =
+        "SOFIA is speaking...";
+
+
+    audio.play();
+
+
+    audio.onended = () => {
+
+        status.textContent =
+            "Hold to talk";
+
+        URL.revokeObjectURL(audioURL);
+
+    };
+
+}
+
+
+// Mouse
+button.addEventListener(
+    "mousedown",
+    startRecording
+);
+
+button.addEventListener(
+    "mouseup",
+    stopRecording
+);
+
+button.addEventListener(
+    "mouseleave",
+    () => {
+
+        if (recorder)
+            stopRecording();
+
+    }
+);
+
+
+// Touch
+button.addEventListener(
+    "touchstart",
+    event => {
+
+        event.preventDefault();
+
+        startRecording();
+
+    }
+);
+
+
+button.addEventListener(
+    "touchend",
+    event => {
+
+        event.preventDefault();
+
+        stopRecording();
+
+    }
+);
+
+</script>
+
+</body>
+
+</html>
