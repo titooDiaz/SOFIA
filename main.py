@@ -53,11 +53,20 @@ def chat():
 
     print(f"SOFIA: {response}")
 
-    # ---------------------
-    # Text -> Speech
-    # ---------------------
+    if not response:
+        return {
+            "error": "SOFIA generated an empty response"
+        }, 500
 
     audio_file = voice.generate(response)
+
+    print(f"Audio file: {audio_file}")
+
+    if not audio_file:
+        return {
+            "error": "Voice generation failed",
+            "response": response
+        }, 500
 
     return send_file(
         audio_file,
