@@ -3,6 +3,7 @@
 
 import os
 import re
+import json
 import shlex
 import platform
 import subprocess
@@ -10,9 +11,8 @@ import ollama
 
 
 class SofiaBrain:
-    """
-    Brain conversacional (como el tuyo) + modo comando.
-    """
+    """Selects a command template and fills variables from user intent."""
+
     def __init__(self, model="qwen3:1.7b"):
         self.model = model
         self.history = [
@@ -21,10 +21,7 @@ class SofiaBrain:
                 "content": (
                     "Your name is SOFIA. "
                     "You are Miguel's personal assistant. "
-                    "Speak naturally, clearly and concisely. "
-                    "Do not think out loud. "
-                    "Do not explain your reasoning. "
-                    "Give only the final answer."
+                    "Be concise. Return only final answers."
                 )
             }
         ]
@@ -37,58 +34,139 @@ class SofiaBrain:
         text = " ".join(text.split())
         return text.strip()
 
-    def think(self, text):
-        self.history.append({"role": "user", "content": text})
-
+    def think(self, prompt):
         response = ollama.chat(
             model=self.model,
-            messages=self.history,
+            messages=self.history + [{"role": "user", "content": prompt}],
             think=False,
-            options={"temperature": 0.2, "num_predict": 120}
+            options={"temperature": 0.1, "num_predict": 220}
         )
-
-        answer = response["message"]["content"]
-        answer = self.clean_response(answer)
-
-        if not answer:
-            answer = "I'm sorry, I couldn't formulate a response."
-
-        self.history.append({"role": "assistant", "content": answer})
+        answer = self.clean_response(response["message"]["content"])
         return answer
 
-    def command_from_user(self, user_text, os_name, cwd):
+    def choose_command_json(self, user_text, os_name, cwd, command_items):
         """
-        Pide al mismo modelo que responda SOLO con un comando de consola.
+        Returns JSON:
+        {
+          "id": "mkdir_named",
+          "args": {"nombre":"proyecto_x"},
+          "confidence": 0.0-1.0
+        }
+        or {"id":"NONE","args":{},"confidence":0}
         """
+        catalog = []
+        for item in command_items:
+            catalog.append({
+                "id": item["id"],
+                "description": item["description"],
+                "template": item["template"],
+                "platforms": item.get("platforms", ["linux", "macos", "windows"]),
+                "args": item.get("args", [])
+            })
+
         prompt = (
-            f"Convert the user request into exactly ONE shell command for {os_name}. "
-            f"Current working directory: {cwd}. "
-            "Rules: return only the command, no quotes around it, no markdown, no explanation, no extra text. "
-            "If the request is ambiguous, return: echo Ambiguous request. "
-            f"User request: {user_text}"
+            "You must select ONE command definition from the catalog and fill args.\n"
+            f"OS: {os_name}\n"
+            f"CWD: {cwd}\n\n"
+            "Rules:\n"
+            "1) Return ONLY valid JSON.\n"
+            "2) JSON schema: {\"id\":\"...\",\"args\":{...},\"confidence\":0.0}\n"
+            "3) id must exist in catalog, or id='NONE' if no good match.\n"
+            "4) Fill args from user request when possible.\n"
+            "5) Do not include markdown.\n\n"
+            f"User request: {user_text}\n\n"
+            f"Catalog: {json.dumps(catalog, ensure_ascii=False)}"
         )
-        cmd = self.think(prompt)
-        cmd = self.clean_response(cmd)
-        return cmd.strip()
+
+        raw = self.think(prompt)
+
+        try:
+            parsed = json.loads(raw)
+            if not isinstance(parsed, dict):
+                return {"id": "NONE", "args": {}, "confidence": 0}
+            parsed.setdefault("id", "NONE")
+            parsed.setdefault("args", {})
+            parsed.setdefault("confidence", 0)
+            if not isinstance(parsed["args"], dict):
+                parsed["args"] = {}
+            return parsed
+        except Exception:
+            return {"id": "NONE", "args": {}, "confidence": 0}
+
+
+class CommandCatalog:
+    """Loads command definitions from JSON."""
+
+    def __init__(self, path):
+        self.path = path
+        self.items = self.load()
+
+    def load(self):
+        if not os.path.isfile(self.path):
+            raise FileNotFoundError(f"Catalog file not found: {self.path}")
+
+        with open(self.path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+
+        if not isinstance(data, list):
+            raise ValueError("commands.json must be a JSON array")
+
+        required = {"id", "description", "template"}
+        cleaned = []
+        for i, item in enumerate(data):
+            if not isinstance(item, dict) or not required.issubset(item.keys()):
+                raise ValueError(f"Invalid command at index {i}")
+            cleaned.append(item)
+
+        return cleaned
+
+    def by_id(self, cmd_id):
+        for item in self.items:
+            if item["id"] == cmd_id:
+                return item
+        return None
+
+
+class TemplateEngine:
+    """Replaces {variables} in templates with validated user values."""
+
+    PLACEHOLDER_RE = re.compile(r"{([a-zA-Z_][a-zA-Z0-9_]*)}")
+
+    @staticmethod
+    def extract_placeholders(template):
+        return list(dict.fromkeys(TemplateEngine.PLACEHOLDER_RE.findall(template)))
+
+    @staticmethod
+    def sanitize_value(val):
+        # Allow letters, numbers, spaces, underscore, dash, dot
+        val = val.strip()
+        if not val:
+            return ""
+        if not re.fullmatch(r"[A-Za-z0-9_\-\. ]{1,80}", val):
+            return ""
+        return val
+
+    @staticmethod
+    def render(template, args):
+        result = template
+        for key in TemplateEngine.extract_placeholders(template):
+            if key not in args:
+                raise ValueError(f"Missing argument: {key}")
+            safe_val = TemplateEngine.sanitize_value(str(args[key]))
+            if not safe_val:
+                raise ValueError(f"Invalid value for: {key}")
+            result = result.replace("{" + key + "}", safe_val)
+        return result
 
 
 class ConsoleRunner:
-    def __init__(self, safe_mode=False, timeout_seconds=25):
-        self.safe_mode = safe_mode
+    def __init__(self, timeout_seconds=25):
         self.timeout_seconds = timeout_seconds
         self.current_dir = os.getcwd()
         self.is_windows = platform.system().lower().startswith("win")
-
-        self.allowed_base = {
-            "pwd", "cd", "ls", "dir", "echo", "whoami", "date", "time",
-            "python", "python3", "pip", "pip3",
-            "start", "open", "google-chrome", "chrome",
-            "code", "notepad", "cat", "type", "mkdir"
-        }
-
         self.blocked_patterns = {
             " rm ", "rmdir", " del ", "format", "mkfs", "shutdown", "reboot",
-            "poweroff", "halt", "sudo", " su ", "dd ", "diskpart"
+            "poweroff", "halt", "sudo", " su ", "dd ", "diskpart", "mkfs."
         }
 
     def _tokenize(self, command):
@@ -109,15 +187,6 @@ class ConsoleRunner:
         tokens = self._tokenize(command.strip())
         if not tokens:
             return False, "Could not parse command."
-
-        base = tokens[0].lower()
-
-        if base == "cd":
-            return True, "OK"
-
-        if self.safe_mode and base not in self.allowed_base:
-            return False, f"Command not allowed in safe mode: {base}"
-
         return True, "OK"
 
     def run(self, command):
@@ -151,21 +220,30 @@ class ConsoleRunner:
             return cmd, "", f"Execution error: {e}", 1
 
 
+def detect_os():
+    if platform.system().lower().startswith("win"):
+        return "windows"
+    if platform.system().lower().startswith("darwin"):
+        return "macos"
+    return "linux"
+
+
 def main():
+    catalog_path = "documents/commands.json"
     brain = SofiaBrain(model="qwen3:1.7b")
-    runner = ConsoleRunner(safe_mode=False, timeout_seconds=25)
+    catalog = CommandCatalog(catalog_path)
+    runner = ConsoleRunner(timeout_seconds=25)
+    os_name = detect_os()
 
-    os_name = "windows" if runner.is_windows else ("macos" if platform.system().lower().startswith("darwin") else "linux")
-
-    print("SOFIA Console Test (Brain-style)")
+    print("SOFIA Console (JSON command catalog)")
     print(f"Model: {brain.model}")
     print(f"OS: {os_name}")
-    print(f"Safe mode: {runner.safe_mode}")
+    print(f"Catalog: {catalog_path} ({len(catalog.items)} commands loaded)")
     print('Type "salir" to exit.\n')
 
     while True:
         try:
-            user_text = input("Tú -> SOFIA: ").strip()
+            user_text = input("You -> SOFIA: ").strip()
         except (KeyboardInterrupt, EOFError):
             print("\nBye.")
             break
@@ -173,15 +251,41 @@ def main():
         if not user_text:
             continue
         if user_text.lower() in {"salir", "exit", "quit"}:
-            print("Hasta luego.")
+            print("See you.")
             break
 
-        command = brain.command_from_user(user_text, os_name=os_name, cwd=runner.current_dir)
+        selection = brain.choose_command_json(
+            user_text=user_text,
+            os_name=os_name,
+            cwd=runner.current_dir,
+            command_items=catalog.items
+        )
 
-        cmd, out, err, code = runner.run(command)
+        selected_id = selection.get("id", "NONE")
+        args = selection.get("args", {})
+
+        cmd_def = catalog.by_id(selected_id)
+        if not cmd_def:
+            print("\nNo suitable command found.\n")
+            continue
+
+        if os_name not in cmd_def.get("platforms", ["linux", "macos", "windows"]):
+            print("\nSelected command is not supported on this OS.\n")
+            continue
+
+        try:
+            final_command = TemplateEngine.render(cmd_def["template"], args)
+        except Exception as e:
+            print("\nCould not build command:", str(e), "\n")
+            continue
+
+        cmd, out, err, code = runner.run(final_command)
 
         print("\n" + "=" * 60)
-        print("SOFIA -> COMMAND SENT:")
+        print("SELECTED COMMAND ID:")
+        print(selected_id)
+        print("-" * 60)
+        print("SELECTED COMMAND:")
         print(cmd)
         print("-" * 60)
         print("STDOUT:")
