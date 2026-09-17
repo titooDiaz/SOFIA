@@ -13,7 +13,7 @@ import ollama
 class SofiaBrain:
     """Selects a command template and fills variables from user intent."""
 
-    def __init__(self, model="qwen3:1.7b"):
+    def __init__(self, model="qwen3:0.6b"):
         self.model = model
         self.history = [
             {
