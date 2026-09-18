@@ -7,14 +7,29 @@ import json
 import shlex
 import platform
 import subprocess
+import hashlib
+import unicodedata
 import ollama
 
 
 class SofiaBrain:
     """Selects a command template and fills variables from user intent."""
 
+    ALL_PLATFORMS = ("linux", "macos", "windows")
+    FAST_PATTERNS = {
+        "list_files": (
+            "listar archivos", "lista archivos", "mostrar archivos", "ver archivos",
+            "list files", "show files", "ls"
+        ),
+        "pwd": (
+            "directorio actual", "donde estoy", "current directory",
+            "working directory", "where am i", "pwd"
+        ),
+    }
+
     def __init__(self, model="qwen3:1.7b"):
         self.model = model
+        self.decision_cache = {}
         self.history = [
             {
                 "role": "system",
@@ -34,15 +49,79 @@ class SofiaBrain:
         text = " ".join(text.split())
         return text.strip()
 
-    def think(self, prompt):
+    def think(self, prompt, options=None):
+        if options is None:
+            options = {"temperature": 0, "num_predict": 80}
         response = ollama.chat(
             model=self.model,
             messages=self.history + [{"role": "user", "content": prompt}],
             think=False,
-            options={"temperature": 0.1, "num_predict": 220}
+            options=options
         )
         answer = self.clean_response(response["message"]["content"])
         return answer
+
+    @staticmethod
+    def _normalize_text(text):
+        normalized = unicodedata.normalize("NFKD", text.lower())
+        normalized = "".join(ch for ch in normalized if not unicodedata.combining(ch))
+        return " ".join(normalized.split())
+
+    @classmethod
+    def _platforms_for_item(cls, item):
+        return item.get("platforms", list(cls.ALL_PLATFORMS))
+
+    @classmethod
+    def _filter_for_platform(cls, command_items, os_name):
+        return [
+            item for item in command_items
+            if os_name in cls._platforms_for_item(item)
+        ]
+
+    def _catalog_signature(self, command_items):
+        canonical = []
+        for item in command_items:
+            canonical.append({
+                "id": item.get("id"),
+                "description": item.get("description"),
+                "template": item.get("template"),
+                "args": item.get("args", []),
+                "platforms": sorted(self._platforms_for_item(item)),
+            })
+        raw = json.dumps(sorted(canonical, key=lambda x: str(x["id"])), ensure_ascii=False, sort_keys=True)
+        return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _command_hint_text(item):
+        return " ".join([
+            str(item.get("id", "")),
+            str(item.get("description", "")),
+            str(item.get("template", "")),
+        ]).lower()
+
+    def _resolve_fast_command(self, intent, command_items):
+        if intent == "list_files":
+            for item in command_items:
+                hint = self._command_hint_text(item)
+                if any(k in hint for k in (" ls", "dir", "list", "listar", "archivo", "file")):
+                    return item["id"], {}
+        if intent == "pwd":
+            for item in command_items:
+                hint = self._command_hint_text(item)
+                if any(k in hint for k in ("pwd", "directorio actual", "current directory", "working directory")):
+                    return item["id"], {}
+        return None
+
+    def fast_decision(self, user_text, os_name, command_items):
+        normalized_text = self._normalize_text(user_text)
+        compatible_items = self._filter_for_platform(command_items, os_name)
+        for intent, patterns in self.FAST_PATTERNS.items():
+            if any(pattern in normalized_text for pattern in patterns):
+                resolved = self._resolve_fast_command(intent, compatible_items)
+                if resolved:
+                    cmd_id, args = resolved
+                    return {"id": cmd_id, "args": args, "confidence": 1.0, "fast_path": True}
+        return None
 
     def choose_command_json(self, user_text, os_name, cwd, command_items):
         """
@@ -54,15 +133,34 @@ class SofiaBrain:
         }
         or {"id":"NONE","args":{},"confidence":0}
         """
+        fast = self.fast_decision(user_text, os_name, command_items)
+        if fast is not None:
+            return fast
+
+        compatible_items = self._filter_for_platform(command_items, os_name)
+        if not compatible_items:
+            return {"id": "NONE", "args": {}, "confidence": 0}
+
+        cache_key = (
+            self._normalize_text(user_text),
+            os_name,
+            os.path.abspath(cwd),
+            self._catalog_signature(command_items),
+        )
+        cached = self.decision_cache.get(cache_key)
+        if cached is not None:
+            return dict(cached)
+
         catalog = []
-        for item in command_items:
-            catalog.append({
+        for item in compatible_items:
+            row = {
                 "id": item["id"],
                 "description": item["description"],
-                "template": item["template"],
-                "platforms": item.get("platforms", ["linux", "macos", "windows"]),
-                "args": item.get("args", [])
-            })
+                "args": item.get("args", []),
+            }
+            if "platforms" in item:
+                row["platforms"] = self._platforms_for_item(item)
+            catalog.append(row)
 
         prompt = (
             "You must select ONE command definition from the catalog and fill args.\n"
@@ -78,7 +176,10 @@ class SofiaBrain:
             f"Catalog: {json.dumps(catalog, ensure_ascii=False)}"
         )
 
-        raw = self.think(prompt)
+        raw = self.think(
+            prompt,
+            options={"temperature": 0, "num_predict": 80}
+        )
 
         try:
             parsed = json.loads(raw)
@@ -89,6 +190,17 @@ class SofiaBrain:
             parsed.setdefault("confidence", 0)
             if not isinstance(parsed["args"], dict):
                 parsed["args"] = {}
+            if not isinstance(parsed.get("id"), str):
+                parsed["id"] = "NONE"
+            valid_ids = {item["id"] for item in compatible_items}
+            if parsed["id"] != "NONE" and parsed["id"] not in valid_ids:
+                parsed["id"] = "NONE"
+                parsed["args"] = {}
+                parsed["confidence"] = 0
+            if not isinstance(parsed["confidence"], (int, float)):
+                parsed["confidence"] = 0
+            parsed["confidence"] = float(parsed["confidence"])
+            self.decision_cache[cache_key] = dict(parsed)
             return parsed
         except Exception:
             return {"id": "NONE", "args": {}, "confidence": 0}
@@ -100,6 +212,7 @@ class CommandCatalog:
     def __init__(self, path):
         self.path = path
         self.items = self.load()
+        self.items_by_id = {item["id"]: item for item in self.items}
 
     def load(self):
         if not os.path.isfile(self.path):
@@ -121,10 +234,7 @@ class CommandCatalog:
         return cleaned
 
     def by_id(self, cmd_id):
-        for item in self.items:
-            if item["id"] == cmd_id:
-                return item
-        return None
+        return self.items_by_id.get(cmd_id)
 
 
 class TemplateEngine:
