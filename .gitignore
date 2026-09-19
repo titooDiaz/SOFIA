@@ -3,5 +3,7 @@ env/
 __pycache__/
 *.pyc
 
+*.wav
+
 documents/commands.json
 *.wav

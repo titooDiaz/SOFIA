@@ -13,72 +13,50 @@ import ollama
 class SofiaBrain:
     """Selects a command template and fills variables from user intent."""
 
-    def __init__(self, model="qwen3:0.6b"):
+    def __init__(self, model="qwen2.5:0.5b"):
         self.model = model
         self.history = [
             {
                 "role": "system",
                 "content": (
                     "Your name is SOFIA. "
-                    "You are Miguel's personal assistant. "
-                    "Be concise. Return only final answers."
+                    "You are a fast command-line assistant. "
+                    "Output ONLY valid JSON."
                 )
             }
         ]
 
-    def clean_response(self, text):
-        text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL)
-        if "<think>" in text:
-            text = text.split("<think>", 1)[0]
-        text = text.replace("<think>", "").replace("</think>", "")
-        text = " ".join(text.split())
-        return text.strip()
-
-    def think(self, prompt):
+    def think_json(self, prompt):
         response = ollama.chat(
             model=self.model,
             messages=self.history + [{"role": "user", "content": prompt}],
-            think=False,
-            options={"temperature": 0.1, "num_predict": 220}
+            format="json",
+            options={
+                "temperature": 0.0,
+                "num_predict": 100
+            }
         )
-        answer = self.clean_response(response["message"]["content"])
-        return answer
+        return response["message"]["content"].strip()
 
     def choose_command_json(self, user_text, os_name, cwd, command_items):
-        """
-        Returns JSON:
-        {
-          "id": "mkdir_named",
-          "args": {"nombre":"proyecto_x"},
-          "confidence": 0.0-1.0
-        }
-        or {"id":"NONE","args":{},"confidence":0}
-        """
         catalog = []
         for item in command_items:
             catalog.append({
                 "id": item["id"],
-                "description": item["description"],
                 "template": item["template"],
-                "platforms": item.get("platforms", ["linux", "macos", "windows"]),
                 "args": item.get("args", [])
             })
 
         prompt = (
-            "You must select ONE command definition from the catalog and fill args.\n"
+            "Select ONE command from the catalog and fill args.\n"
             f"OS: {os_name}\n"
             f"CWD: {cwd}\n\n"
-            "Rules:\n"
-            "1) Return ONLY valid JSON.\n"
-            "2) JSON schema: {\"id\":\"...\",\"args\":{...},\"confidence\":0.0}\n"
-            "3) id must exist in catalog, or id='NONE' if no good match.\n"
-            "4) Fill args from user request when possible.\n"
-            "5) Do not include markdown.\n\n"
-            f"User request: {user_text}\n\n"
+            "JSON schema: {\"id\":\"...\",\"args\":{...},\"confidence\":0.0}\n"
+            f"User request: {user_text}\n"
             f"Catalog: {json.dumps(catalog, ensure_ascii=False)}"
         )
 
-        raw = self.think(prompt)
+        raw = self.think_json(prompt)
 
         try:
             parsed = json.loads(raw)
@@ -86,9 +64,6 @@ class SofiaBrain:
                 return {"id": "NONE", "args": {}, "confidence": 0}
             parsed.setdefault("id", "NONE")
             parsed.setdefault("args", {})
-            parsed.setdefault("confidence", 0)
-            if not isinstance(parsed["args"], dict):
-                parsed["args"] = {}
             return parsed
         except Exception:
             return {"id": "NONE", "args": {}, "confidence": 0}
@@ -230,7 +205,7 @@ def detect_os():
 
 def main():
     catalog_path = "documents/commands.json"
-    brain = SofiaBrain(model="qwen3:1.7b")
+    brain = SofiaBrain(model="qwen3:0.6b")
     catalog = CommandCatalog(catalog_path)
     runner = ConsoleRunner(timeout_seconds=25)
     os_name = detect_os()
