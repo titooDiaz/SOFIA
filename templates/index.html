@@ -1,260 +1,165 @@
 <!DOCTYPE html>
 <html lang="en">
-
 <head>
-
     <meta charset="UTF-8">
-
     <title>SOFIA</title>
-
     <style>
-
         body {
             background: #111;
             color: white;
-
             font-family: Arial;
-
             display: flex;
+            flex-direction: column;
             justify-content: center;
             align-items: center;
-
             height: 100vh;
-        }
-
-        #talkButton {
-
-            width: 180px;
-            height: 180px;
-
-            border-radius: 50%;
-
-            border: none;
-
-            background: #222;
-
-            color: white;
-
-            font-size: 20px;
-
-            cursor: pointer;
-        }
-
-        #talkButton.recording {
-
-            background: #ff3b3b;
-
-            transform: scale(1.1);
+            margin: 0;
         }
 
         #status {
-
-            position: absolute;
-
-            top: 30px;
-
             font-size: 20px;
+            margin-bottom: 40px;
         }
 
+        #talkButton {
+            width: 180px;
+            height: 180px;
+            border-radius: 50%;
+            border: none;
+            background: #222;
+            color: white;
+            font-size: 20px;
+            cursor: pointer;
+            transition: transform 0.2s, background 0.2s;
+        }
+
+        #talkButton.recording {
+            background: #ff3b3b;
+            transform: scale(1.1);
+        }
+
+        .options-container {
+            margin-top: 40px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            background: #222;
+            padding: 15px 25px;
+            border-radius: 25px;
+            font-size: 16px;
+        }
+
+        .options-container input[type="checkbox"] {
+            width: 20px;
+            height: 20px;
+            cursor: pointer;
+        }
     </style>
-
 </head>
-
-
 <body>
 
-    <div id="status">
-        Hold to talk
+    <div id="status">Hold to talk</div>
+
+    <button id="talkButton">RECORD!</button>
+
+    <div class="options-container">
+        <input type="checkbox" id="manipulateToggle">
+        <label for="manipulateToggle">Manipular el dispositivo</label>
     </div>
 
-
-    <button id="talkButton">
-
-        RECORD!
-
-    </button>
-
-
 <script>
-
 const button = document.getElementById("talkButton");
 const status = document.getElementById("status");
+const manipulateToggle = document.getElementById("manipulateToggle");
 
 let recorder;
 let chunks = [];
 
-
-// start recording
 async function startRecording() {
-
-    const stream =
-        await navigator.mediaDevices.getUserMedia({
-            audio: true
-        });
-
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
     recorder = new MediaRecorder(stream);
-
     chunks = [];
 
-
     recorder.ondataavailable = event => {
-
         chunks.push(event.data);
-
     };
-
 
     recorder.onstop = sendAudio;
-
-
     recorder.start();
 
-
     button.classList.add("recording");
-
     status.textContent = "Listening...";
-
 }
 
-
-// End recording
 function stopRecording() {
-
-    if (!recorder)
-        return;
-
+    if (!recorder) return;
     recorder.stop();
-
-    recorder.stream
-        .getTracks()
-        .forEach(track => track.stop());
-
+    recorder.stream.getTracks().forEach(track => track.stop());
     button.classList.remove("recording");
-
     status.textContent = "SOFIA is thinking...";
-
 }
 
-
-// Send AUdio
 async function sendAudio() {
-
-    const blob = new Blob(
-        chunks,
-        {
-            type: "audio/webm"
-        }
-    );
-
-
+    const blob = new Blob(chunks, { type: "audio/webm" });
     const formData = new FormData();
 
-    formData.append(
-        "audio",
-        blob,
-        "input.webm"
-    );
+    formData.append("audio", blob, "input.webm");
+    
+    // Sends the device manipulation flag to the backend
+    formData.append("manipulate", manipulateToggle.checked);
 
-
-    const response =
-        await fetch(
-            "/chat",
-            {
-                method: "POST",
-                body: formData
-            }
-        );
-
+    const response = await fetch("/chat", {
+        method: "POST",
+        body: formData
+    });
 
     if (!response.ok) {
-
-        status.textContent =
-            "Something went wrong.";
-
+        status.textContent = "Something went wrong.";
+        setTimeout(() => { status.textContent = "Hold to talk"; }, 2000);
         return;
-
     }
 
+    const contentType = response.headers.get("content-type");
+    
+    // Checks if the server replied with JSON indicating a system command was executed
+    if (contentType && contentType.includes("application/json")) {
+        const data = await response.json();
+        status.textContent = "Action Executed: " + data.message;
+        
+        setTimeout(() => {
+            status.textContent = "Hold to talk";
+        }, 2000);
+        return;
+    }
 
-    const audioBlob =
-        await response.blob();
+    // Fallback to processing the response as a standard audio stream
+    const audioBlob = await response.blob();
+    const audioURL = URL.createObjectURL(audioBlob);
+    const audio = new Audio(audioURL);
 
-
-    const audioURL =
-        URL.createObjectURL(audioBlob);
-
-
-    const audio =
-        new Audio(audioURL);
-
-
-    status.textContent =
-        "SOFIA is speaking...";
-
-
+    status.textContent = "SOFIA is speaking...";
     audio.play();
 
-
     audio.onended = () => {
-
-        status.textContent =
-            "Hold to talk";
-
+        status.textContent = "Hold to talk";
         URL.revokeObjectURL(audioURL);
-
     };
-
 }
 
+button.addEventListener("mousedown", startRecording);
+button.addEventListener("mouseup", stopRecording);
+button.addEventListener("mouseleave", () => {
+    if (recorder && button.classList.contains("recording")) stopRecording();
+});
 
-// Mouse
-button.addEventListener(
-    "mousedown",
-    startRecording
-);
-
-button.addEventListener(
-    "mouseup",
-    stopRecording
-);
-
-button.addEventListener(
-    "mouseleave",
-    () => {
-
-        if (recorder)
-            stopRecording();
-
-    }
-);
-
-
-// Touch
-button.addEventListener(
-    "touchstart",
-    event => {
-
-        event.preventDefault();
-
-        startRecording();
-
-    }
-);
-
-
-button.addEventListener(
-    "touchend",
-    event => {
-
-        event.preventDefault();
-
-        stopRecording();
-
-    }
-);
-
+button.addEventListener("touchstart", event => {
+    event.preventDefault();
+    startRecording();
+});
+button.addEventListener("touchend", event => {
+    event.preventDefault();
+    stopRecording();
+});
 </script>
-
 </body>
-
 </html>
