@@ -1,10 +1,14 @@
 from flask import Flask, render_template, request, send_file, jsonify
+from dotenv import load_dotenv
 from services.brain import SofiaBrain
 from services.listener import SofiaListener
 from services.voice import SofiaVoice
 from services.commander import DeviceCommander 
+from services.desktop_mode import DesktopMode
 
 import os
+
+load_dotenv()
 
 app = Flask(__name__)
 
@@ -14,6 +18,7 @@ brain = SofiaBrain()
 listener = SofiaListener()
 voice = SofiaVoice()
 commander = DeviceCommander()
+desktop_mode = None
 
 print("SOFIA is ready.")
 
@@ -85,6 +90,13 @@ def chat():
     )
 
 if __name__ == "__main__":
+    desktop_enabled = os.getenv("Desktopmode", "false").strip().lower() in {
+        "1", "true", "yes", "on"
+    }
+    if desktop_enabled:
+        desktop_mode = DesktopMode(listener, brain, voice, commander)
+        desktop_mode.start()
+
     app.run(
         host="127.0.0.1",
         port=5000,

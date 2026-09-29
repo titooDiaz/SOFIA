@@ -57,3 +57,17 @@ python main.py
 ```
 
 SOFIA communicates with Ollama locally to process requests.
+
+## Desktop mode
+
+The optional hands-free mode is controlled from `.env`:
+
+```env
+Desktopmode=true
+```
+
+When enabled, the Python server listens through the computer microphone, without
+using the browser. Say `sofia` to activate it. The native pink indicator appears
+while recording the request, stops after silence, and sends the text through the
+same reasoning and device-command flow. Set `Desktopmode=false` and restart the
+server to disable it.

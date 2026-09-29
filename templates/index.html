@@ -16,10 +16,7 @@
             margin: 0;
         }
 
-        #status {
-            font-size: 20px;
-            margin-bottom: 40px;
-        }
+        #status { font-size: 20px; margin-bottom: 40px; }
 
         #talkButton {
             width: 180px;
@@ -30,13 +27,9 @@
             color: white;
             font-size: 20px;
             cursor: pointer;
-            transition: transform 0.2s, background 0.2s;
         }
 
-        #talkButton.recording {
-            background: #ff3b3b;
-            transform: scale(1.1);
-        }
+        #talkButton.recording { background: #ff3b3b; transform: scale(1.1); }
 
         .options-container {
             margin-top: 40px;
@@ -57,11 +50,8 @@
     </style>
 </head>
 <body>
-
     <div id="status">Hold to talk</div>
-
     <button id="talkButton">RECORD!</button>
-
     <div class="options-container">
         <input type="checkbox" id="manipulateToggle">
         <label for="manipulateToggle">Manipular el dispositivo</label>
@@ -71,7 +61,6 @@
 const button = document.getElementById("talkButton");
 const status = document.getElementById("status");
 const manipulateToggle = document.getElementById("manipulateToggle");
-
 let recorder;
 let chunks = [];
 
@@ -79,14 +68,9 @@ async function startRecording() {
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
     recorder = new MediaRecorder(stream);
     chunks = [];
-
-    recorder.ondataavailable = event => {
-        chunks.push(event.data);
-    };
-
+    recorder.ondataavailable = event => chunks.push(event.data);
     recorder.onstop = sendAudio;
     recorder.start();
-
     button.classList.add("recording");
     status.textContent = "Listening...";
 }
@@ -100,46 +84,26 @@ function stopRecording() {
 }
 
 async function sendAudio() {
-    const blob = new Blob(chunks, { type: "audio/webm" });
     const formData = new FormData();
-
-    formData.append("audio", blob, "input.webm");
-    
-    // Sends the device manipulation flag to the backend
+    formData.append("audio", new Blob(chunks, { type: "audio/webm" }), "input.webm");
     formData.append("manipulate", manipulateToggle.checked);
-
-    const response = await fetch("/chat", {
-        method: "POST",
-        body: formData
-    });
+    const response = await fetch("/chat", { method: "POST", body: formData });
 
     if (!response.ok) {
         status.textContent = "Something went wrong.";
-        setTimeout(() => { status.textContent = "Hold to talk"; }, 2000);
         return;
     }
 
-    const contentType = response.headers.get("content-type");
-    
-    // Checks if the server replied with JSON indicating a system command was executed
-    if (contentType && contentType.includes("application/json")) {
+    if ((response.headers.get("content-type") || "").includes("application/json")) {
         const data = await response.json();
         status.textContent = "Action Executed: " + data.message;
-        
-        setTimeout(() => {
-            status.textContent = "Hold to talk";
-        }, 2000);
         return;
     }
 
-    // Fallback to processing the response as a standard audio stream
-    const audioBlob = await response.blob();
-    const audioURL = URL.createObjectURL(audioBlob);
+    const audioURL = URL.createObjectURL(await response.blob());
     const audio = new Audio(audioURL);
-
     status.textContent = "SOFIA is speaking...";
     audio.play();
-
     audio.onended = () => {
         status.textContent = "Hold to talk";
         URL.revokeObjectURL(audioURL);
@@ -151,7 +115,6 @@ button.addEventListener("mouseup", stopRecording);
 button.addEventListener("mouseleave", () => {
     if (recorder && button.classList.contains("recording")) stopRecording();
 });
-
 button.addEventListener("touchstart", event => {
     event.preventDefault();
     startRecording();

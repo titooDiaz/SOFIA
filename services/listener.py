@@ -19,7 +19,7 @@ class SofiaListener:
 
         segments, _ = self.model.transcribe(
             filename,
-            language="en"
+            language="es"
         )
 
         text = ""
