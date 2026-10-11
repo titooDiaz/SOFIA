@@ -1,190 +1,140 @@
-import os
-import subprocess
-import tempfile
+import queue
 import threading
-import time
+import tkinter as tk
+import unicodedata
 
 import numpy as np
 import sounddevice as sd
-import soundfile as sf
-from scipy.io.wavfile import write
+from faster_whisper import WhisperModel
 
 
-class DesktopIndicator:
+SAMPLE_RATE = 16000
+WINDOW_SECONDS = 3
+CHECK_INTERVAL = 1.0
 
-    _window_script = r'''
-import queue
-import sys
-import tkinter as tk
-import threading
 
-commands = queue.Queue()
-
-def read_commands():
-    for line in sys.stdin:
-        commands.put(line.strip())
-
-root = tk.Tk()
-root.withdraw()
-window = tk.Toplevel(root)
-window.overrideredirect(True)
-window.attributes("-topmost", True)
-window.configure(bg="#ff5cab")
-height = root.winfo_screenheight()
-window.geometry(f"24x24+24+{height - 48}")
-window.withdraw()
-
-def poll():
-    try:
-        while True:
-            command = commands.get_nowait()
-            if command == "show":
-                window.deiconify()
-            elif command == "hide":
-                window.withdraw()
-    except queue.Empty:
-        pass
-    root.after(50, poll)
-
-threading.Thread(target=read_commands, daemon=True).start()
-poll()
-root.mainloop()
-'''
-
+class SofiaDetector:
     def __init__(self):
-        try:
-            self.process = subprocess.Popen(
-                ["python3", "-c", self._window_script],
-                stdin=subprocess.PIPE,
-                text=True
-            )
-        except OSError as error:
-            print(f"Desktop indicator unavailable: {error}")
+        print("Loading Whisper...")
 
-    def set_active(self, active):
-        if not hasattr(self, "process") or self.process.poll() is not None:
-            return
-        try:
-            self.process.stdin.write("show\n" if active else "hide\n")
-            self.process.stdin.flush()
-        except (BrokenPipeError, OSError):
-            pass
+        self.model = WhisperModel(
+            "small",
+            device="cpu",
+            compute_type="int8"
+        )
 
+        print("Whisper ready.")
 
-class DesktopMode:
+        self.audio_queue = queue.Queue()
+        self.audio_buffer = np.zeros(0, dtype=np.float32)
+        self.running = True
+        self.detecting = False
 
-    sample_rate = 16000
-    wake_window_seconds = 2.0
-    speech_chunk_seconds = 0.25
-    silence_seconds = 0.9
-    silence_threshold = 0.018
-    max_speech_seconds = 15
+        self.root = tk.Tk()
+        self.root.withdraw()
 
-    def __init__(self, listener, brain, voice, commander):
-        self.listener = listener
-        self.brain = brain
-        self.voice = voice
-        self.commander = commander
-        self.running = threading.Event()
-        self.indicator = DesktopIndicator()
-        self.thread = threading.Thread(target=self._run, daemon=True)
+        self.window = tk.Toplevel(self.root)
+        self.window.configure(bg="#ff69b4")
+        self.window.overrideredirect(True)
+        self.window.geometry("64x64")
 
-    def start(self):
-        print("Desktop mode enabled. Say 'sofia' to activate.")
-        self.running.set()
-        self.thread.start()
+        self.window.withdraw()
 
-    def stop(self):
-        self.running.clear()
-        self.indicator.set_active(False)
+        self.root.after(100, self.process_audio)
 
-    def _record(self, seconds):
-        audio = sd.rec(
-            int(seconds * self.sample_rate),
-            samplerate=self.sample_rate,
+        self.stream = sd.InputStream(
+            samplerate=SAMPLE_RATE,
             channels=1,
-            dtype="int16"
+            dtype="float32",
+            blocksize=16000,
+            callback=self.audio_callback
         )
-        sd.wait()
-        return audio
 
-    def _transcribe_audio(self, audio):
-        filename = tempfile.mktemp(suffix=".wav")
+        self.stream.start()
+
+        print('Listening... Say "Sofia" to activate the pink window.')
+
+        self.root.mainloop()
+
+    def audio_callback(self, indata, frames, time, status):
+        if status:
+            print(status)
+
+        self.audio_queue.put(indata[:, 0].copy())
+
+    def normalize(self, text):
+        text = unicodedata.normalize("NFD", text.lower())
+        text = "".join(
+            char for char in text
+            if unicodedata.category(char) != "Mn"
+        )
+        return text
+
+    def process_audio(self):
+        while not self.audio_queue.empty():
+            chunk = self.audio_queue.get()
+            self.audio_buffer = np.concatenate(
+                (self.audio_buffer, chunk)
+            )
+
+        max_samples = SAMPLE_RATE * WINDOW_SECONDS
+
+        if len(self.audio_buffer) > max_samples:
+            self.audio_buffer = self.audio_buffer[-max_samples:]
+
+        if len(self.audio_buffer) >= max_samples and not self.detecting:
+            self.detecting = True
+            threading.Thread(
+                target=self.transcribe_audio,
+                daemon=True
+            ).start()
+
+        self.root.after(int(CHECK_INTERVAL * 1000), self.process_audio)
+
+    def transcribe_audio(self):
         try:
-            write(filename, self.sample_rate, audio)
-            return self.listener.transcribe(filename)
+            audio = self.audio_buffer.copy()
+
+            segments, _ = self.model.transcribe(
+                audio,
+                language="en",
+                beam_size=5,
+                condition_on_previous_text=False
+            )
+
+            text = "".join(segment.text for segment in segments).strip()
+
+            if text:
+                print("Heard:", text)
+
+            normalized = self.normalize(text)
+
+            if "sofia" or "sophia" in normalized:
+                self.root.after(0, self.show_window)
+
+        except Exception as error:
+            print("Transcription error:", error)
+
         finally:
-            try:
-                os.remove(filename)
-            except OSError:
-                pass
+            self.detecting = False
 
-    def _record_command(self):
-        chunks = []
-        silence_started = None
-        started = time.monotonic()
+    def show_window(self):
+        screen_width = self.root.winfo_screenwidth()
+        screen_height = self.root.winfo_screenheight()
 
-        while self.running.is_set():
-            chunk = self._record(self.speech_chunk_seconds)
-            chunks.append(chunk)
-            level = float(np.sqrt(np.mean(np.square(chunk.astype(np.float32) / 32768))))
-            now = time.monotonic()
-
-            if level < self.silence_threshold:
-                silence_started = silence_started or now
-                if now - silence_started >= self.silence_seconds:
-                    break
-            else:
-                silence_started = None
-
-            if now - started >= self.max_speech_seconds:
-                break
-
-        if not chunks:
-            return ""
-        return self._transcribe_audio(np.concatenate(chunks))
-
-    def _process(self, text):
-        print(f"You: {text}")
-        prompt_decision = (
-            f"answer 'YES' or 'NO' to the following question: "
-            f"Should I execute the command '{text}'?"
+        self.window.geometry(
+            f"64x64+{screen_width - 80}+{screen_height - 100}"
         )
-        decision = self.brain.think(prompt_decision).strip().upper()
+        self.window.deiconify()
+        self.window.lift()
+        self.root.after(3000, self.window.withdraw)
 
-        if "YES" in decision:
-            success, message = self.commander.execute_intent(text)
-            print(f"SOFIA Result: {message}")
-            return
+    def close(self):
+        self.running = False
+        self.stream.stop()
+        self.stream.close()
+        self.root.destroy()
 
-        response = self.brain.think(text)
-        print(f"SOFIA: {response}")
-        audio_file = self.voice.generate(response)
-        if not audio_file:
-            return
 
-        audio, sample_rate = sf.read(audio_file, dtype="float32")
-        sd.play(audio, sample_rate)
-        sd.wait()
-        try:
-            os.remove(audio_file)
-        except OSError:
-            pass
-
-    def _run(self):
-        while self.running.is_set():
-            try:
-                wake_audio = self._record(self.wake_window_seconds)
-                wake_text = self._transcribe_audio(wake_audio)
-                if "sofia" not in wake_text.lower():
-                    continue
-
-                self.indicator.set_active(True)
-                text = self._record_command()
-                if text:
-                    self._process(text)
-            except Exception as error:
-                print(f"Desktop mode error: {error}")
-                time.sleep(1)
-            finally:
-                self.indicator.set_active(False)
+if __name__ == "__main__":
+    SofiaDetector()

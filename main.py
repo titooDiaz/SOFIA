@@ -93,13 +93,13 @@ if __name__ == "__main__":
     desktop_enabled = os.getenv("Desktopmode", "false").strip().lower() in {
         "1", "true", "yes", "on"
     }
-    if desktop_enabled:
+    if True:
         desktop_mode = DesktopMode(listener, brain, voice, commander)
         desktop_mode.start()
 
     app.run(
         host="127.0.0.1",
-        port=5000,
+        port=3000,
         debug=False,
         use_reloader=False
     )
