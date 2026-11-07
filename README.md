@@ -58,6 +58,25 @@ python main.py
 
 SOFIA communicates with Ollama locally to process requests.
 
+## Agente visual local
+
+La carpeta `agent/` contiene un agente opcional controlado desde la interfaz web.
+Escribe una tarea en el panel **Agente local Ollama** para que el modelo observe
+la pantalla y use únicamente acciones acotadas (mover, hacer clic, escribir,
+atajos no destructivos y esperar). El botón **Detener** cancela el ciclo.
+
+Activa sus dependencias y el modelo de visión con:
+
+```bash
+env/bin/pip install pyautogui Pillow
+ollama pull qwen3-vl:2b
+```
+
+Puedes cambiar el modelo con `OLLAMA_AGENT_MODEL` en `.env`. El agente no tiene
+acceso a una terminal ni permite borrado, apagado, contraseñas, pagos o cambios
+de configuración del sistema. El control se inicia únicamente al pulsar
+**Ejecutar tarea** en la interfaz local.
+
 ## Desktop mode
 
 The optional hands-free mode is controlled from `.env`:

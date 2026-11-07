@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="es">
 <head>
     <meta charset="UTF-8">
     <title>SOFIA</title>
@@ -47,6 +47,11 @@
             height: 20px;
             cursor: pointer;
         }
+
+        #agentPanel { width: min(680px, 90vw); margin-top: 24px; padding: 18px; background: #222; border-radius: 16px; }
+        #goal { width: 100%; box-sizing: border-box; padding: 12px; background: #111; color: white; border: 1px solid #555; border-radius: 8px; }
+        #agentPanel button { margin-top: 10px; padding: 10px 16px; cursor: pointer; }
+        #stopAgent { background: #8b2020; color: white; border: 0; border-radius: 6px; }
     </style>
 </head>
 <body>
@@ -56,13 +61,41 @@
         <input type="checkbox" id="manipulateToggle">
         <label for="manipulateToggle">Manipular el dispositivo</label>
     </div>
+    <section id="agentPanel">
+        <strong>Agente local Ollama</strong>
+        <p>Control acotado: no ejecuta terminal, contraseñas, pagos, borrado ni ajustes del sistema.</p>
+        <textarea id="goal" rows="3" placeholder="Escribe la tarea que debe realizar..."></textarea>
+        <button id="runAgent">Ejecutar tarea</button>
+        <button id="stopAgent" type="button">Detener</button>
+        <div id="agentStatus"></div>
+    </section>
 
 <script>
 const button = document.getElementById("talkButton");
 const status = document.getElementById("status");
 const manipulateToggle = document.getElementById("manipulateToggle");
+const goal = document.getElementById("goal");
+const agentStatus = document.getElementById("agentStatus");
 let recorder;
 let chunks = [];
+
+document.getElementById("runAgent").addEventListener("click", async () => {
+    const text = goal.value.trim();
+    if (!text) return;
+    agentStatus.textContent = "Ejecutando...";
+    const response = await fetch("/agent/run", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({goal: text})
+    });
+    const data = await response.json();
+    agentStatus.textContent = data.error || data.message || `Estado: ${data.status}`;
+});
+
+document.getElementById("stopAgent").addEventListener("click", async () => {
+    await fetch("/agent/stop", {method: "POST"});
+    agentStatus.textContent = "Deteniendo...";
+});
 
 async function startRecording() {
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true });

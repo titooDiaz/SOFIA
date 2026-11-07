@@ -5,6 +5,7 @@ from services.listener import SofiaListener
 from services.voice import SofiaVoice
 from services.commander import DeviceCommander 
 from services.desktop_mode import DesktopMode
+from agent.desktop_agent import DesktopAgent
 
 import os
 
@@ -19,6 +20,7 @@ listener = SofiaListener()
 voice = SofiaVoice()
 commander = DeviceCommander()
 desktop_mode = None
+desktop_agent = DesktopAgent(model=os.getenv("OLLAMA_AGENT_MODEL", DesktopAgent.MODEL))
 
 print("SOFIA is ready.")
 
@@ -88,6 +90,24 @@ def chat():
         audio_file,
         mimetype="audio/wav"
     )
+
+
+@app.route("/agent/run", methods=["POST"])
+def run_agent():
+    data = request.get_json(silent=True) or {}
+    goal = data.get("goal", "")
+    if not isinstance(goal, str):
+        return jsonify({"error": "La tarea debe ser texto."}), 400
+    try:
+        return jsonify(desktop_agent.run(goal))
+    except (RuntimeError, ValueError) as error:
+        return jsonify({"error": str(error)}), 409
+
+
+@app.route("/agent/stop", methods=["POST"])
+def stop_agent():
+    desktop_agent.stop()
+    return jsonify({"status": "stopping"})
 
 if __name__ == "__main__":
     desktop_enabled = os.getenv("Desktopmode", "false").strip().lower() in {
