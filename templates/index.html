@@ -89,7 +89,10 @@ document.getElementById("runAgent").addEventListener("click", async () => {
         body: JSON.stringify({goal: text})
     });
     const data = await response.json();
-    agentStatus.textContent = data.error || data.message || `Estado: ${data.status}`;
+    const completed = (data.objectives || []).filter(item => item.completed).length;
+    const total = (data.objectives || []).length;
+    agentStatus.textContent = data.error || data.message ||
+        `Estado: ${data.status} (${completed}/${total} objetivos verificados)`;
 });
 
 document.getElementById("stopAgent").addEventListener("click", async () => {

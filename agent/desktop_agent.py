@@ -9,9 +9,10 @@ import ollama
 
 
 class DesktopAgent:
-    """Runs a short Ollama vision/action loop without shell access."""
+    """Runs a bounded Ollama vision/action loop without shell access."""
 
-    MAX_STEPS = 20
+    MAX_STEPS = 60
+    MAX_OBJECTIVES = 12
     MAX_TEXT = 500
     MODEL = "qwen3-vl:2b"
 
@@ -39,22 +40,44 @@ class DesktopAgent:
         self._stop.clear()
         with self._lock:
             self._running = True
+        objectives: list[dict[str, Any]] = []
         actions: list[dict[str, Any]] = []
         try:
+            objectives = self._plan_objectives(goal)
             for step in range(min(max_steps, self.MAX_STEPS)):
                 if self._stop.is_set():
-                    return {"status": "stopped", "actions": actions}
+                    return {"status": "stopped", "objectives": objectives, "actions": actions}
                 image = self._screenshot()
-                decision = self._decide(goal, image, actions)
+                decision = self._decide(goal, image, objectives, actions)
+                self._update_objectives(objectives, decision.get("completed_objectives", []))
                 action = decision.get("action", "finish")
                 if action == "finish":
-                    return {"status": "completed", "message": decision.get("message", ""), "actions": actions}
+                    if not all(item["completed"] for item in objectives):
+                        action = "wait"
+                        decision["seconds"] = 1
+                    else:
+                        return {
+                            "status": "completed",
+                            "message": decision.get("message", ""),
+                            "objectives": objectives,
+                            "actions": actions,
+                        }
                 result = self._execute(action, decision)
                 actions.append({"step": step + 1, "action": action, "result": result})
                 if result.startswith("DENIED"):
-                    return {"status": "denied", "message": result, "actions": actions}
+                    return {
+                        "status": "denied",
+                        "message": result,
+                        "objectives": objectives,
+                        "actions": actions,
+                    }
                 time.sleep(0.25)
-            return {"status": "limit_reached", "message": "Se alcanzó el límite de acciones.", "actions": actions}
+            return {
+                "status": "limit_reached",
+                "message": "Se alcanzó el límite técnico de acciones antes de verificar todos los objetivos.",
+                "objectives": objectives,
+                "actions": actions,
+            }
         finally:
             with self._lock:
                 self._running = False
@@ -69,16 +92,71 @@ class DesktopAgent:
         image.save(buffer, format="PNG")
         return buffer.getvalue()
 
-    def _decide(self, goal: str, image: bytes, actions: list[dict[str, Any]]) -> dict[str, Any]:
+    def _plan_objectives(self, goal: str) -> list[dict[str, Any]]:
+        response = ollama.chat(
+            model=self.model,
+            messages=[{
+                "role": "user",
+                "content": (
+                    "Break the user's desktop task into 1 to 12 concrete, observable "
+                    "objectives. Return JSON only as {\"objectives\":[{\"id\":\"o1\","
+                    "\"description\":\"...\",\"done_when\":\"...\"}]}. "
+                    "Do not include dangerous, destructive, secret, payment, or system-setting objectives. "
+                    f"User task: {goal}"
+                ),
+            }],
+            format="json",
+            options={"temperature": 0, "num_predict": 500},
+        )
+        parsed = json.loads(response["message"]["content"])
+        raw_objectives = parsed.get("objectives", []) if isinstance(parsed, dict) else []
+        if not isinstance(raw_objectives, list) or not raw_objectives:
+            raise ValueError("Ollama no pudo definir objetivos verificables.")
+        objectives = []
+        for index, item in enumerate(raw_objectives[: self.MAX_OBJECTIVES], start=1):
+            if not isinstance(item, dict):
+                continue
+            description = str(item.get("description", "")).strip()
+            done_when = str(item.get("done_when", "")).strip()
+            if description and done_when:
+                objectives.append({
+                    "id": f"o{index}",
+                    "description": description[:300],
+                    "done_when": done_when[:300],
+                    "completed": False,
+                })
+        if not objectives:
+            raise ValueError("Ollama no generó objetivos válidos.")
+        return objectives
+
+    @staticmethod
+    def _update_objectives(objectives: list[dict[str, Any]], completed: Any) -> None:
+        if not isinstance(completed, list):
+            return
+        completed_ids = {str(item) for item in completed}
+        for objective in objectives:
+            if objective["id"] in completed_ids:
+                objective["completed"] = True
+
+    def _decide(
+        self,
+        goal: str,
+        image: bytes,
+        objectives: list[dict[str, Any]],
+        actions: list[dict[str, Any]],
+    ) -> dict[str, Any]:
         prompt = (
             "You control a local desktop to complete the user's goal. "
-            "Return JSON only. Choose exactly one action. "
+            "Return JSON only. Choose exactly one action and report only objectives "
+            "that are visibly verified in the current screenshot. "
             "Allowed actions: move(x,y), click(x,y,button), type(text), "
             "hotkey(keys), wait(seconds), finish(message). "
             "Never use shell, terminal, passwords, payments, deletion, or system settings. "
             "Coordinates must be visible and plausible. Keep text short. "
-            f"Goal: {goal}\nPrevious actions: {json.dumps(actions[-5:], ensure_ascii=False)}\n"
-            'Schema: {"action":"finish","message":"..."}'
+            "Do not choose finish until every objective is visibly complete. "
+            f"Goal: {goal}\nObjectives: {json.dumps(objectives, ensure_ascii=False)}\n"
+            f"Previous actions: {json.dumps(actions[-5:], ensure_ascii=False)}\n"
+            'Schema: {"action":"click","x":0,"y":0,"completed_objectives":[],"message":""}'
         )
         response = ollama.chat(
             model=self.model,

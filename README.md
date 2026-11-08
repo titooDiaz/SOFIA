@@ -61,8 +61,10 @@ SOFIA communicates with Ollama locally to process requests.
 ## Agente visual local
 
 La carpeta `agent/` contiene un agente opcional controlado desde la interfaz web.
-Escribe una tarea en el panel **Agente local Ollama** para que el modelo observe
-la pantalla y use únicamente acciones acotadas (mover, hacer clic, escribir,
+Escribe una tarea en el panel **Agente local Ollama**. Ollama la divide primero
+en objetivos verificables y, después de cada captura, marca como completados
+únicamente los objetivos que pueda comprobar visualmente. Solo termina cuando
+todos están marcados; usa acciones acotadas (mover, hacer clic, escribir,
 atajos no destructivos y esperar). El botón **Detener** cancela el ciclo.
 
 Activa sus dependencias y el modelo de visión con:
@@ -74,8 +76,9 @@ ollama pull qwen3-vl:2b
 
 Puedes cambiar el modelo con `OLLAMA_AGENT_MODEL` en `.env`. El agente no tiene
 acceso a una terminal ni permite borrado, apagado, contraseñas, pagos o cambios
-de configuración del sistema. El control se inicia únicamente al pulsar
-**Ejecutar tarea** en la interfaz local.
+de configuración del sistema. El control se inicia únicamente al pulsar **Ejecutar tarea** en la interfaz
+local. Existe un límite técnico de 60 acciones por ejecución para evitar bucles
+incontrolables; si se alcanza, devuelve los objetivos que aún faltan.
 
 ## Desktop mode
 
